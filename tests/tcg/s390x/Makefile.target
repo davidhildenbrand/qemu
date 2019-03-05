@@ -13,6 +13,7 @@ VECTOR_TESTS=vge
 VECTOR_TESTS+=vlgv
 VECTOR_TESTS+=vgbm
 VECTOR_TESTS+=vgm
+VECTOR_TESTS+=vlrep
 TESTS+=$(VECTOR_TESTS)
 
 #enable vectors and optimisation for vector tests
