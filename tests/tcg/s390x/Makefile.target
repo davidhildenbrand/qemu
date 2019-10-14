@@ -19,6 +19,7 @@ VECTOR_TESTS+=vpk
 VECTOR_TESTS+=vup
 VECTOR_TESTS+=va
 VECTOR_TESTS+=vsel
+VECTOR_TESTS+=verll
 TESTS+=$(VECTOR_TESTS)
 
 #enable vectors and optimisation for vector tests
