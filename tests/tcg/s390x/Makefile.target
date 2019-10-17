@@ -22,6 +22,7 @@ VECTOR_TESTS+=vsel
 VECTOR_TESTS+=verll
 VECTOR_TESTS+=vsum
 VECTOR_TESTS+=vm
+VECTOR_TESTS+=vsl
 TESTS+=$(VECTOR_TESTS)
 
 #enable vectors and optimisation for vector tests
