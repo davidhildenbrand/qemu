@@ -649,6 +649,12 @@ sev_guest_init(const char *id)
     uint32_t host_cbitpos;
     struct sev_user_data_status status = {};
 
+    ret = ram_block_discard_disable(true);
+    if (ret) {
+        error_report("%s: cannot disable RAM discard", __func__);
+        return NULL;
+    }
+
     sev_state = s = g_new0(SEVState, 1);
     s->sev_info = lookup_sev_guest_info(id);
     if (!s->sev_info) {
@@ -724,6 +730,7 @@ sev_guest_init(const char *id)
 err:
     g_free(sev_state);
     sev_state = NULL;
+    ram_block_discard_disable(false);
     return NULL;
 }
 
