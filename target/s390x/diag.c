@@ -31,9 +31,14 @@ void handle_diag_260(CPUS390XState *env, uint64_t r1, uint64_t r3, uintptr_t ra)
     switch (subcode) {
     case 0xc:
         /* The first storage extent maps to our initial ram. */
-        env->regs[r1] = ms->ram_size - 1;
-        /* The highest addressable byte maps to the initial ram size for now. */
         env->regs[r3] = ms->ram_size - 1;
+        if (memory_devices_allowed()) {
+            /* The highest addressable byte maps to the maximum ram size. */
+            env->regs[r3] = ms->maxram_size - 1;
+        } else {
+            /* The highest addressable byte maps to the initial ram size. */
+            env->regs[r3] = ms->ram_size - 1;
+        }
         break;
     case 0x10: {
         ram_addr_t addr, length;
