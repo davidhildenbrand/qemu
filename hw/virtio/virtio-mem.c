@@ -124,7 +124,7 @@ static uint64_t virtio_mem_default_block_size(RAMBlock *rb)
  * necessary (as the section size can change). But it's more likely that the
  * section size will rather get smaller and not bigger over time.
  */
-#if defined(TARGET_X86_64) || defined(TARGET_I386)
+#if defined(TARGET_X86_64) || defined(TARGET_I386) || defined(TARGET_S390X)
 #define VIRTIO_MEM_USABLE_EXTENT (2 * (128 * MiB))
 #else
 #error VIRTIO_MEM_USABLE_EXTENT not defined
@@ -627,6 +627,9 @@ static uint64_t virtio_mem_get_features(VirtIODevice *vdev, uint64_t features,
         virtio_add_feature(&features, VIRTIO_MEM_F_ACPI_PXM);
 #endif
     }
+#if defined(TARGET_S390X)
+    virtio_add_feature(&features, VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE);
+#endif
     return features;
 }
 
