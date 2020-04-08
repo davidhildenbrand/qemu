@@ -230,6 +230,7 @@ void kvm_s390_cmma_reset(void)
 
 static void kvm_s390_enable_cmma(void)
 {
+    const MachineState *ms = MACHINE(qdev_get_machine());
     int rc;
     struct kvm_device_attr attr = {
         .group = KVM_S390_VM_MEM_CTRL,
@@ -239,6 +240,11 @@ static void kvm_s390_enable_cmma(void)
     if (cap_hpage_1m) {
         warn_report("CMM will not be enabled because it is not "
                     "compatible with huge memory backings.");
+        return;
+    }
+    if (ms->device_memory) {
+        warn_report("CMM will not be enabled because it is not "
+                    "compatible with memory devices.");
         return;
     }
     rc = kvm_vm_ioctl(kvm_state, KVM_SET_DEVICE_ATTR, &attr);

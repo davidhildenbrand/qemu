@@ -113,6 +113,29 @@ static void subsystem_reset(void)
     }
 }
 
+static void s390_device_memory_init(MachineState *machine)
+{
+    MemoryRegion *sysmem = get_system_memory();
+
+    machine->device_memory = g_malloc0(sizeof(*machine->device_memory));
+
+    /* initialize device memory address space */
+    if (machine->ram_size < machine->maxram_size) {
+        ram_addr_t device_mem_size = machine->maxram_size - machine->ram_size;
+
+        if (!QEMU_IS_ALIGNED(machine->maxram_size, MiB)) {
+            error_report("maximum memory size must be aligned to 1 MB");
+            exit(EXIT_FAILURE);
+        }
+
+        machine->device_memory->base = machine->ram_size;
+        memory_region_init(&machine->device_memory->mr, OBJECT(machine),
+                           "device-memory", device_mem_size);
+        memory_region_add_subregion(sysmem, machine->device_memory->base,
+                                    &machine->device_memory->mr);
+    }
+}
+
 static void s390_memory_init(MachineState *machine)
 {
     MemoryRegion *sysmem = get_system_memory();
@@ -142,6 +165,11 @@ static void s390_memory_init(MachineState *machine)
     s390_skeys_init();
     /* Initialize storage attributes device */
     s390_stattrib_init();
+
+    /* Support for memory devices is glued to compat machines. */
+    if (memory_devices_allowed()) {
+        s390_device_memory_init(machine);
+    }
 }
 
 static void s390_init_ipl_dev(const char *kernel_filename,
@@ -559,6 +587,7 @@ static void ccw_machine_class_init(ObjectClass *oc, void *data)
     s390mc->cpu_model_allowed = true;
     s390mc->css_migration_enabled = true;
     s390mc->hpage_1m_allowed = true;
+    s390mc->memory_devices_allowed = true;
     mc->init = ccw_init;
     mc->reset = s390_machine_reset;
     mc->block_default_type = IF_VIRTIO;
@@ -652,6 +681,11 @@ bool cpu_model_allowed(void)
 bool hpage_1m_allowed(void)
 {
     return get_machine_class()->hpage_1m_allowed;
+}
+
+bool memory_devices_allowed(void)
+{
+    return get_machine_class()->memory_devices_allowed;
 }
 
 static char *machine_get_loadparm(Object *obj, Error **errp)
@@ -788,6 +822,9 @@ static void ccw_machine_6_0_instance_options(MachineState *machine)
 
 static void ccw_machine_6_0_class_options(MachineClass *mc)
 {
+    S390CcwMachineClass *s390mc = S390_CCW_MACHINE_CLASS(mc);
+
+    s390mc->memory_devices_allowed = false;
     ccw_machine_6_1_class_options(mc);
     compat_props_add(mc->compat_props, hw_compat_6_0, hw_compat_6_0_len);
 }

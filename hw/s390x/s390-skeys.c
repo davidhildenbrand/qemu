@@ -225,7 +225,11 @@ static bool qemu_s390_enable_skeys(S390SKeysState *ss)
     if (g_once_init_enter(&initialized)) {
         MachineState *machine = MACHINE(qdev_get_machine());
 
-        skeys->key_count = machine->ram_size / TARGET_PAGE_SIZE;
+        if (machine->device_memory) {
+            skeys->key_count = machine->maxram_size / TARGET_PAGE_SIZE;
+        } else {
+            skeys->key_count = machine->ram_size / TARGET_PAGE_SIZE;
+        }
         skeys->keydata = g_malloc0(skeys->key_count);
         g_once_init_leave(&initialized, 1);
     }
