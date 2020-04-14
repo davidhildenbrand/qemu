@@ -2397,6 +2397,13 @@ static DisasJumpType op_diag(DisasContext *s, DisasOps *o)
     TCGv_i32 r3 = tcg_const_i32(get_field(s, r3));
     TCGv_i32 func_code = tcg_const_i32(get_field(s, i2));
 
+    /*
+     * Diag 0x260 updates the CC - only for some subcodes. Calculate the
+     * current cc, such that the helper can simply overwrite it conditionally.
+     */
+    if (get_field(s, i2) == 0x260) {
+        gen_op_calc_cc(s);
+    }
     gen_helper_diag(cpu_env, r1, r3, func_code);
 
     tcg_temp_free_i32(func_code);

@@ -23,6 +23,56 @@
 #include "hw/s390x/pv.h"
 #include "kvm_s390x.h"
 
+void handle_diag_260(CPUS390XState *env, uint64_t r1, uint64_t r3, uintptr_t ra)
+{
+    MachineState *ms = MACHINE(qdev_get_machine());
+    const uint64_t subcode = env->regs[r3];
+
+    switch (subcode) {
+    case 0xc:
+        /* The first storage extent maps to our initial ram. */
+        env->regs[r1] = ms->ram_size - 1;
+        /* The highest addressable byte maps to the initial ram size for now. */
+        env->regs[r3] = ms->ram_size - 1;
+        break;
+    case 0x10: {
+        ram_addr_t addr, length;
+        uint64_t tmp;
+
+        if (r1 & 1) {
+            s390_program_interrupt(env, PGM_SPECIFICATION, ra);
+            return;
+        }
+
+        addr = env->regs[r1];
+        length = env->regs[r1 + 1];
+        if (!QEMU_IS_ALIGNED(addr, 16) || !QEMU_IS_ALIGNED(length, 16) ||
+            !length) {
+            s390_program_interrupt(env, PGM_SPECIFICATION, ra);
+            return;
+        }
+        if (!address_space_access_valid(&address_space_memory, addr, length,
+                                        true, MEMTXATTRS_UNSPECIFIED)) {
+            s390_program_interrupt(env, PGM_ADDRESSING, ra);
+            return;
+        }
+
+        /* Indicate our initial memory ([0 .. ram_size - 1]) */
+        tmp = cpu_to_be64(0);
+        cpu_physical_memory_write(addr, &tmp, sizeof(tmp));
+        tmp = cpu_to_be64(ms->ram_size - 1);
+        cpu_physical_memory_write(addr + sizeof(tmp), &tmp, sizeof(tmp));
+
+        /* Exactly one entry was stored, it always fits into the area. */
+        env->regs[r3] = 1;
+        setcc(env_archcpu(env), 0);
+        break;
+    }
+    default:
+        s390_program_interrupt(env, PGM_SPECIFICATION, ra);
+    }
+}
+
 int handle_diag_288(CPUS390XState *env, uint64_t r1, uint64_t r3)
 {
     uint64_t func = env->regs[r1];
