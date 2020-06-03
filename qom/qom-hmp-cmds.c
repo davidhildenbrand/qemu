@@ -48,13 +48,19 @@ void hmp_qom_set(Monitor *mon, const QDict *qdict)
     const char *property = qdict_get_str(qdict, "property");
     const char *value = qdict_get_str(qdict, "value");
     Error *err = NULL;
-    QObject *obj;
+    bool ambiguous = false;
+    Object *obj;
 
-    obj = qobject_from_json(value, &err);
-    if (err == NULL) {
-        qmp_qom_set(path, property, obj, &err);
+    obj = object_resolve_path(path, &ambiguous);
+    if (obj == NULL) {
+        error_set(&err, ERROR_CLASS_DEVICE_NOT_FOUND,
+                  "Device '%s' not found", path);
+    } else {
+        if (ambiguous) {
+            monitor_printf(mon, "Warning: Path '%s' is ambiguous\n", path);
+        }
+        object_property_parse(obj, value, property, &err);
     }
-
     hmp_handle_error(mon, err);
 }
 
