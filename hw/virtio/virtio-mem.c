@@ -51,7 +51,7 @@
  * necessary (as the section size can change). But it's more likely that the
  * section size will rather get smaller and not bigger over time.
  */
-#if defined(__x86_64__)
+#if defined(TARGET_X86_64) || defined(TARGET_I386)
 #define VIRTIO_MEM_USABLE_EXTENT (2 * (128 * MiB))
 #else
 #error VIRTIO_MEM_USABLE_EXTENT not defined
