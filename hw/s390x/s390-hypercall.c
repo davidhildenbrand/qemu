@@ -57,6 +57,22 @@ static int handle_virtio_ccw_notify(uint64_t subch_id, uint64_t data)
     return 0;
 }
 
+static void handle_storage_limits(CPUS390XState *env)
+{
+    MachineState *machine = MACHINE(qdev_get_machine());
+
+    /* Initial memory. */
+    env->regs[2] = machine->ram_size - 1;
+
+    /* Upper limit for hotplug/device memory. */
+    if (!machine->device_memory) {
+        env->regs[3] = env->regs[2];
+    } else {
+        env->regs[3] = machine->device_memory->base +
+                       memory_region_size(&machine->device_memory->mr) - 1;
+    }
+}
+
 int handle_diag_500(CPUS390XState *env)
 {
     const uint64_t subcode = env->regs[1];
@@ -67,6 +83,9 @@ int handle_diag_500(CPUS390XState *env)
         return 0;
     case DIAG500_VIRTIO_CCW_NOTIFY:
         env->regs[2] = handle_virtio_ccw_notify(env->regs[2], env->regs[3]);
+        return 0;
+    case DIAG500_STORAGE_LIMITS:
+        handle_storage_limits(env);
         return 0;
     default:
         return -EINVAL;
