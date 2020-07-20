@@ -16,6 +16,7 @@
 #define DIAG500_VIRTIO_RESET           1 /* legacy */
 #define DIAG500_VIRTIO_SET_STATUS      2 /* legacy */
 #define DIAG500_VIRTIO_CCW_NOTIFY      3 /* KVM_S390_VIRTIO_CCW_NOTIFY */
+#define DIAG500_DEVICE_MEMORY_REGION   4
 
 void handle_diag_500(CPUS390XState *env, uintptr_t ra);
 #endif /* HW_S390_HYPERCALL_H */
