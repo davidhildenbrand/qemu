@@ -9,8 +9,8 @@
  * directory.
  */
 
-#ifndef HW_S390_VIRTIO_HCALL_H
-#define HW_S390_VIRTIO_HCALL_H
+#ifndef HW_S390_HYPERCALL_H
+#define HW_S390_HYPERCALL_H
 
 #define DIAG500_VIRTIO_NOTIFY          0 /* legacy, implemented as a NOP */
 #define DIAG500_VIRTIO_RESET           1 /* legacy */
@@ -18,4 +18,4 @@
 #define DIAG500_VIRTIO_CCW_NOTIFY      3 /* KVM_S390_VIRTIO_CCW_NOTIFY */
 
 void handle_diag_500(CPUS390XState *env, uintptr_t ra);
-#endif /* HW_S390_VIRTIO_HCALL_H */
+#endif /* HW_S390_HYPERCALL_H */
