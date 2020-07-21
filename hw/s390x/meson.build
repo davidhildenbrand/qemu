@@ -12,7 +12,7 @@ s390x_ss.add(files(
   's390-pci-inst.c',
   's390-skeys.c',
   's390-stattrib.c',
-  's390-virtio-hcall.c',
+  's390-hypercall.c',
   'sclp.c',
   'sclpcpu.c',
   'sclpquiesce.c',
