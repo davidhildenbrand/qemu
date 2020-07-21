@@ -17,7 +17,6 @@
 #include "hw/boards.h"
 #include "exec/address-spaces.h"
 #include "exec/ram_addr.h"
-#include "hw/s390x/s390-virtio-hcall.h"
 #include "hw/s390x/sclp.h"
 #include "hw/s390x/s390_flic.h"
 #include "hw/s390x/ioinst.h"
@@ -114,48 +113,6 @@ static void subsystem_reset(void)
             qdev_reset_all(dev);
         }
     }
-}
-
-static int virtio_ccw_hcall_notify(const uint64_t *args)
-{
-    uint64_t subch_id = args[0];
-    uint64_t queue = args[1];
-    SubchDev *sch;
-    int cssid, ssid, schid, m;
-
-    if (ioinst_disassemble_sch_ident(subch_id, &m, &cssid, &ssid, &schid)) {
-        return -EINVAL;
-    }
-    sch = css_find_subch(m, cssid, ssid, schid);
-    if (!sch || !css_subch_visible(sch)) {
-        return -EINVAL;
-    }
-    if (queue >= VIRTIO_QUEUE_MAX) {
-        return -EINVAL;
-    }
-    virtio_queue_notify(virtio_ccw_get_vdev(sch), queue);
-    return 0;
-
-}
-
-static int virtio_ccw_hcall_early_printk(const uint64_t *args)
-{
-    uint64_t mem = args[0];
-
-    if (mem < ram_size) {
-        /* Early printk */
-        return 0;
-    }
-    return -EINVAL;
-}
-
-static void virtio_ccw_register_hcalls(void)
-{
-    s390_register_virtio_hypercall(KVM_S390_VIRTIO_CCW_NOTIFY,
-                                   virtio_ccw_hcall_notify);
-    /* Tolerate early printk. */
-    s390_register_virtio_hypercall(KVM_S390_VIRTIO_NOTIFY,
-                                   virtio_ccw_hcall_early_printk);
 }
 
 static void s390_memory_init(MachineState *machine)
@@ -283,9 +240,6 @@ static void ccw_init(MachineState *machine)
     object_property_add_child(qdev_get_machine(), TYPE_S390_PCI_HOST_BRIDGE,
                               OBJECT(dev));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-
-    /* register hypercalls */
-    virtio_ccw_register_hcalls();
 
     s390_enable_css_support(s390_cpu_addr2state(0));
 

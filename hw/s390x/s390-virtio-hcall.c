@@ -12,30 +12,50 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "hw/s390x/s390-virtio-hcall.h"
+#include "hw/s390x/ioinst.h"
+#include "hw/s390x/css.h"
+#include "virtio-ccw.h"
 
-#define MAX_DIAG_SUBCODES 255
-
-static s390_virtio_fn s390_diag500_table[MAX_DIAG_SUBCODES];
-
-void s390_register_virtio_hypercall(uint64_t code, s390_virtio_fn fn)
+static int handle_virtio_notify(uint64_t mem)
 {
-    assert(code < MAX_DIAG_SUBCODES);
-    assert(!s390_diag500_table[code]);
+    if (mem < ram_size) {
+        /* Tolerate early printk. */
+        return 0;
+    }
+    return -EINVAL;
+}
 
-    s390_diag500_table[code] = fn;
+static int handle_virtio_ccw_notify(uint64_t subch_id, uint64_t queue)
+{
+    SubchDev *sch;
+    int cssid, ssid, schid, m;
+
+    if (ioinst_disassemble_sch_ident(subch_id, &m, &cssid, &ssid, &schid)) {
+        return -EINVAL;
+    }
+    sch = css_find_subch(m, cssid, ssid, schid);
+    if (!sch || !css_subch_visible(sch)) {
+        return -EINVAL;
+    }
+    if (queue >= VIRTIO_QUEUE_MAX) {
+        return -EINVAL;
+    }
+    virtio_queue_notify(virtio_ccw_get_vdev(sch), queue);
+    return 0;
 }
 
 int s390_virtio_hypercall(CPUS390XState *env)
 {
-    s390_virtio_fn fn;
+     const uint64_t subcode = env->regs[1];
 
-    if (env->regs[1] < MAX_DIAG_SUBCODES) {
-        fn = s390_diag500_table[env->regs[1]];
-        if (fn) {
-            env->regs[2] = fn(&env->regs[2]);
-            return 0;
-        }
-    }
-
-    return -EINVAL;
+     switch (subcode) {
+     case KVM_S390_VIRTIO_NOTIFY:
+         env->regs[2] = handle_virtio_notify(env->regs[2]);
+         return 0;
+     case KVM_S390_VIRTIO_CCW_NOTIFY:
+         env->regs[2] = handle_virtio_ccw_notify(env->regs[2], env->regs[3]);
+         return 0;
+     default:
+         return -EINVAL;
+     }
 }
