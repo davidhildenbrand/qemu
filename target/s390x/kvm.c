@@ -1551,18 +1551,9 @@ static int handle_e3(S390CPU *cpu, struct kvm_run *run, uint8_t ipbl)
     return r;
 }
 
-static int handle_hypercall(S390CPU *cpu, struct kvm_run *run)
+static void handle_hypercall(S390CPU *cpu, struct kvm_run *run)
 {
-    CPUS390XState *env = &cpu->env;
-    int ret;
-
-    ret = s390_virtio_hypercall(env);
-    if (ret == -EINVAL) {
-        kvm_s390_program_interrupt(cpu, PGM_SPECIFICATION);
-        return 0;
-    }
-
-    return ret;
+    handle_diag_500(&cpu->env, RA_IGNORED);
 }
 
 static void kvm_handle_diag_288(S390CPU *cpu, struct kvm_run *run)
@@ -1621,7 +1612,7 @@ static int handle_diag(S390CPU *cpu, struct kvm_run *run, uint32_t ipb)
         kvm_handle_diag_308(cpu, run);
         break;
     case DIAG_KVM_HYPERCALL:
-        r = handle_hypercall(cpu, run);
+        handle_hypercall(cpu, run);
         break;
     case DIAG_KVM_BREAKPOINT:
         r = handle_sw_breakpoint(cpu, run);
