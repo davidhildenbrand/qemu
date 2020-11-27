@@ -132,6 +132,7 @@ static uint64_t virtio_mem_default_block_size(RAMBlock *rb)
 
 static bool virtio_mem_is_busy(void)
 {
+    /* TODO: locking ? quickly grab the BQL ?*/
     /*
      * Postcopy cannot handle concurrent discards and we don't want to migrate
      * pages on-demand with stale content when plugging new blocks.
@@ -151,10 +152,12 @@ typedef int (*virtio_mem_range_cb)(const VirtIOMEM *vmem, void *arg,
 static int virtio_mem_for_each_unplugged_range(const VirtIOMEM *vmem, void *arg,
                                                virtio_mem_range_cb cb)
 {
+    QemuMutex *mutex = (QemuMutex *)&vmem->mutex;
     unsigned long first_zero_bit, last_zero_bit;
     uint64_t offset, size;
     int ret = 0;
 
+    qemu_mutex_lock(mutex);
     first_zero_bit = find_first_zero_bit(vmem->bitmap, vmem->bitmap_size);
     while (first_zero_bit < vmem->bitmap_size) {
         offset = first_zero_bit * vmem->block_size;
@@ -169,16 +172,19 @@ static int virtio_mem_for_each_unplugged_range(const VirtIOMEM *vmem, void *arg,
         first_zero_bit = find_next_zero_bit(vmem->bitmap, vmem->bitmap_size,
                                             last_zero_bit + 2);
     }
+    qemu_mutex_unlock(mutex);
     return ret;
 }
 
 static int virtio_mem_for_each_plugged_range(const VirtIOMEM *vmem, void *arg,
                                              virtio_mem_range_cb cb)
 {
+    QemuMutex *mutex = (QemuMutex *)&vmem->mutex;
     unsigned long first_bit, last_bit;
     uint64_t offset, size;
     int ret = 0;
 
+    qemu_mutex_lock(mutex);
     first_bit = find_first_bit(vmem->bitmap, vmem->bitmap_size);
     while (first_bit < vmem->bitmap_size) {
         offset = first_bit * vmem->block_size;
@@ -193,19 +199,23 @@ static int virtio_mem_for_each_plugged_range(const VirtIOMEM *vmem, void *arg,
         first_bit = find_next_bit(vmem->bitmap, vmem->bitmap_size,
                                   last_bit + 2);
     }
+    qemu_mutex_unlock(mutex);
     return ret;
 }
 
+/* Never called with vmem->mutex. Called without BQL from request thread. */
 static void virtio_mem_notify_unplug(VirtIOMEM *vmem, uint64_t offset,
                                      uint64_t size)
 {
     RamDiscardListener *rdl;
 
+    /* TODO: lock for lists? */
     QLIST_FOREACH(rdl, &vmem->rdl_list, next) {
         rdl->notify_discard(rdl, &vmem->memdev->mr, offset, size);
     }
 }
 
+/* Never called with vmem->mutex. Called without BQL from request thread. */
 static int virtio_mem_notify_plug(VirtIOMEM *vmem, uint64_t offset,
                                   uint64_t size)
 {
@@ -252,6 +262,7 @@ static int virtio_mem_notify_discard_range_cb(const VirtIOMEM *vmem, void *arg,
     return 0;
 }
 
+/* Never called with vmem->mutex. Called without BQL from request thread. */
 static void virtio_mem_notify_unplug_all(VirtIOMEM *vmem)
 {
     bool individual_calls = false;
@@ -275,6 +286,23 @@ static void virtio_mem_notify_unplug_all(VirtIOMEM *vmem)
     }
 }
 
+/* Called without vmem->mutex. Called without BQL from request thread. */
+static void virtio_mem_notify_size_change(VirtIOMEM *vmem)
+{
+    bool locked = true;
+
+    /* We call into generic QEMU code, e.g., triggering QAPI events. */
+    if (!qemu_mutex_iothread_locked()) {
+        locked = false;
+        qemu_mutex_lock_iothread();
+    }
+    notifier_list_notify(&vmem->size_change_notifiers, &vmem->size);
+    if (!locked) {
+        qemu_mutex_unlock_iothread();
+    }
+}
+
+/* Called with vmem->mutex held when not called from request thread. */
 static bool virtio_mem_test_bitmap(const VirtIOMEM *vmem, uint64_t start_gpa,
                                    uint64_t size, bool plugged)
 {
@@ -291,6 +319,7 @@ static bool virtio_mem_test_bitmap(const VirtIOMEM *vmem, uint64_t start_gpa,
     return found_bit > last_bit;
 }
 
+/* Called with vmem->mutex held. */
 static void virtio_mem_set_bitmap(VirtIOMEM *vmem, uint64_t start_gpa,
                                   uint64_t size, bool plugged)
 {
@@ -328,6 +357,7 @@ static void virtio_mem_send_response_simple(VirtIOMEM *vmem,
     virtio_mem_send_response(vmem, elem, &resp);
 }
 
+/* Called with vmem->mutex held when not called from request thread. */
 static bool virtio_mem_valid_range(const VirtIOMEM *vmem, uint64_t gpa,
                                    uint64_t size)
 {
@@ -346,34 +376,10 @@ static bool virtio_mem_valid_range(const VirtIOMEM *vmem, uint64_t gpa,
     return true;
 }
 
-static int virtio_mem_set_block_state(VirtIOMEM *vmem, uint64_t start_gpa,
-                                      uint64_t size, bool plug)
-{
-    const uint64_t offset = start_gpa - vmem->addr;
-    int ret;
-
-    if (virtio_mem_is_busy()) {
-        return -EBUSY;
-    }
-
-    if (!plug) {
-        ret = ram_block_discard_range(vmem->memdev->mr.ram_block, offset, size);
-        if (ret) {
-            error_report("Unexpected error discarding RAM: %s",
-                         strerror(-ret));
-            return -EBUSY;
-        }
-        virtio_mem_notify_unplug(vmem, offset, size);
-    } else if (virtio_mem_notify_plug(vmem, offset, size)) {
-        return -EBUSY;
-    }
-    virtio_mem_set_bitmap(vmem, start_gpa, size, plug);
-    return 0;
-}
-
 static int virtio_mem_state_change_request(VirtIOMEM *vmem, uint64_t gpa,
                                            uint16_t nb_blocks, bool plug)
 {
+    const uint64_t offset = gpa - vmem->addr;
     const uint64_t size = nb_blocks * vmem->block_size;
     int ret;
 
@@ -390,16 +396,36 @@ static int virtio_mem_state_change_request(VirtIOMEM *vmem, uint64_t gpa,
         return VIRTIO_MEM_RESP_ERROR;
     }
 
-    ret = virtio_mem_set_block_state(vmem, gpa, size, plug);
-    if (ret) {
+    if (virtio_mem_is_busy()) {
         return VIRTIO_MEM_RESP_BUSY;
     }
-    if (plug) {
-        vmem->size += size;
-    } else {
+
+    if (!plug) {
+        qemu_mutex_lock(&vmem->mutex);
+        ret = ram_block_discard_range(vmem->memdev->mr.ram_block, offset, size);
+        if (ret) {
+            qemu_mutex_unlock(&vmem->mutex);
+            error_report("Unexpected error discarding RAM: %s",
+                         strerror(-ret));
+            return VIRTIO_MEM_RESP_BUSY;
+        }
         vmem->size -= size;
+        virtio_mem_set_bitmap(vmem, gpa, size, false);
+        qemu_mutex_unlock(&vmem->mutex);
+
+        virtio_mem_notify_unplug(vmem, offset, size);
+    } else {
+        if (virtio_mem_notify_plug(vmem, offset, size)) {
+            return VIRTIO_MEM_RESP_BUSY;
+        }
+
+        qemu_mutex_lock(&vmem->mutex);
+        vmem->size += size;
+        virtio_mem_set_bitmap(vmem, gpa, size, true);
+        qemu_mutex_unlock(&vmem->mutex);
     }
-    notifier_list_notify(&vmem->size_change_notifiers, &vmem->size);
+
+    virtio_mem_notify_size_change(vmem);
     return VIRTIO_MEM_RESP_ACK;
 }
 
@@ -452,24 +478,33 @@ static void virtio_mem_resize_usable_region(VirtIOMEM *vmem,
 static int virtio_mem_unplug_all(VirtIOMEM *vmem)
 {
     RAMBlock *rb = vmem->memdev->mr.ram_block;
+    bool size_changed = false;
     int ret;
 
     if (virtio_mem_is_busy()) {
         return -EBUSY;
     }
 
+    qemu_mutex_lock(&vmem->mutex);
     ret = ram_block_discard_range(rb, 0, qemu_ram_get_used_length(rb));
     if (ret) {
+        qemu_mutex_unlock(&vmem->mutex);
         error_report("Unexpected error discarding RAM: %s", strerror(-ret));
         return -EBUSY;
     }
-    virtio_mem_notify_unplug_all(vmem);
 
     bitmap_clear(vmem->bitmap, 0, vmem->bitmap_size);
     if (vmem->size) {
         vmem->size = 0;
-        notifier_list_notify(&vmem->size_change_notifiers, &vmem->size);
+        size_changed = true;
     }
+    qemu_mutex_unlock(&vmem->mutex);
+
+    if (size_changed) {
+        virtio_mem_notify_size_change(vmem);
+    }
+    virtio_mem_notify_unplug_all(vmem);
+
     trace_virtio_mem_unplugged_all();
     virtio_mem_resize_usable_region(vmem, vmem->requested_size, true);
     return 0;
@@ -513,10 +548,11 @@ static void virtio_mem_state_request(VirtIOMEM *vmem, VirtQueueElement *elem,
     virtio_mem_send_response(vmem, elem, &resp);
 }
 
-static void virtio_mem_handle_request(VirtIODevice *vdev, VirtQueue *vq)
+static void virtio_mem_process_pending_requests(VirtIOMEM *vmem)
 {
     const int len = sizeof(struct virtio_mem_req);
-    VirtIOMEM *vmem = VIRTIO_MEM(vdev);
+    VirtIODevice *vdev = VIRTIO_DEVICE(vmem);
+    VirtQueue *vq = vmem->vq;
     VirtQueueElement *elem;
     struct virtio_mem_req req;
     uint16_t type;
@@ -571,11 +607,89 @@ static void virtio_mem_handle_request(VirtIODevice *vdev, VirtQueue *vq)
     }
 }
 
+static void *virtio_mem_request_thread_cb(void *opaque)
+{
+    VirtIOMEM *vmem = VIRTIO_MEM(opaque);
+
+    while (true) {
+        qemu_mutex_lock(&vmem->req.mutex);
+        qemu_cond_wait(&vmem->req.cond, &vmem->req.mutex);
+        if (vmem->req.destroying) {
+            break;
+        } else if (!vmem->req.paused) {
+            virtio_mem_process_pending_requests(vmem);
+        }
+        qemu_mutex_unlock(&vmem->req.mutex);
+    }
+    return NULL;
+}
+
+static void virtio_mem_request_thread_init(VirtIOMEM *vmem)
+{
+    vmem->req.paused = true;
+    qemu_thread_create(&vmem->req.thread, "virtio-mem/request",
+                       virtio_mem_request_thread_cb, vmem,
+                       QEMU_THREAD_JOINABLE);
+}
+
+static void virtio_mem_request_thread_destroy(VirtIOMEM *vmem)
+{
+    qemu_mutex_lock(&vmem->req.mutex);
+    vmem->req.destroying = true;
+    qemu_mutex_unlock(&vmem->req.mutex);
+
+    qemu_cond_signal(&vmem->req.cond);
+    qemu_thread_join(&vmem->req.thread);
+}
+
+static void virtio_mem_request_thread_pause(VirtIOMEM *vmem)
+{
+    g_assert(qemu_mutex_iothread_locked());
+    if (vmem->req.paused) {
+        return;
+    }
+    qemu_mutex_lock(&vmem->req.mutex);
+    vmem->req.paused = true;
+    qemu_mutex_unlock(&vmem->req.mutex);
+}
+
+static void virtio_mem_request_thread_unpause(VirtIOMEM *vmem)
+{
+    g_assert(qemu_mutex_iothread_locked());
+    if (!vmem->req.paused) {
+        return;
+    }
+    qemu_mutex_lock(&vmem->req.mutex);
+    vmem->req.paused = false;
+    qemu_mutex_unlock(&vmem->req.mutex);
+    qemu_cond_signal(&vmem->req.cond);
+}
+
+static void virtio_mem_handle_request(VirtIODevice *vdev, VirtQueue *vq)
+{
+    VirtIOMEM *vmem = VIRTIO_MEM(vdev);
+
+    virtio_mem_request_thread_unpause(vmem);
+    qemu_cond_signal(&vmem->req.cond);
+}
+
+static void virtio_mem_device_reset(VirtIODevice *vdev)
+{
+    VirtIOMEM *vmem = VIRTIO_MEM(vdev);
+
+    /*
+     * Make sure we're done processing requests before resetting the queue.
+     * New requests will unpause the thread.
+     */
+    virtio_mem_request_thread_pause(vmem);
+}
+
 static void virtio_mem_get_config(VirtIODevice *vdev, uint8_t *config_data)
 {
     VirtIOMEM *vmem = VIRTIO_MEM(vdev);
     struct virtio_mem_config *config = (void *) config_data;
 
+    qemu_mutex_lock(&vmem->mutex);
     config->block_size = cpu_to_le64(vmem->block_size);
     config->node_id = cpu_to_le16(vmem->node);
     config->requested_size = cpu_to_le64(vmem->requested_size);
@@ -583,6 +697,7 @@ static void virtio_mem_get_config(VirtIODevice *vdev, uint8_t *config_data)
     config->addr = cpu_to_le64(vmem->addr);
     config->region_size = cpu_to_le64(memory_region_size(&vmem->memdev->mr));
     config->usable_region_size = cpu_to_le64(vmem->usable_region_size);
+    qemu_mutex_unlock(&vmem->mutex);
 }
 
 static uint64_t virtio_mem_get_features(VirtIODevice *vdev, uint64_t features,
@@ -601,6 +716,12 @@ static uint64_t virtio_mem_get_features(VirtIODevice *vdev, uint64_t features,
 static void virtio_mem_system_reset(void *opaque)
 {
     VirtIOMEM *vmem = VIRTIO_MEM(opaque);
+
+    /*
+     * Make sure we're done processing requests before unplugging all memory.
+     * New requests will unpause the thread.
+     */
+    virtio_mem_request_thread_pause(vmem);
 
     /*
      * During usual resets, we will unplug all memory and shrink the usable
@@ -719,12 +840,18 @@ static void virtio_mem_device_realize(DeviceState *dev, Error **errp)
      * region and exposes it via an address space.
      */
     memory_region_set_ram_discard_mgr(&vmem->memdev->mr, RAM_DISCARD_MGR(vmem));
+
+    /* Start processing requests. */
+    virtio_mem_request_thread_init(vmem);
 }
 
 static void virtio_mem_device_unrealize(DeviceState *dev)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
     VirtIOMEM *vmem = VIRTIO_MEM(dev);
+
+    /* Stop processing requests. */
+    virtio_mem_request_thread_destroy(vmem);
 
     /*
      * The unplug handler unmapped the memory region, it cannot be
@@ -931,8 +1058,12 @@ static void virtio_mem_remove_size_change_notifier(VirtIOMEM *vmem,
 static void virtio_mem_get_size(Object *obj, Visitor *v, const char *name,
                                 void *opaque, Error **errp)
 {
-    const VirtIOMEM *vmem = VIRTIO_MEM(obj);
-    uint64_t value = vmem->size;
+    VirtIOMEM *vmem = VIRTIO_MEM(obj);
+    uint64_t value;
+
+    qemu_mutex_lock(&vmem->mutex);
+    value = vmem->size;
+    qemu_mutex_unlock(&vmem->mutex);
 
     visit_type_size(v, name, &value, errp);
 }
@@ -979,6 +1110,7 @@ static void virtio_mem_set_requested_size(Object *obj, Visitor *v,
         }
 
         if (value != vmem->requested_size) {
+            virtio_mem_request_thread_pause(vmem);
             virtio_mem_resize_usable_region(vmem, value, false);
             vmem->requested_size = value;
         }
@@ -1083,6 +1215,9 @@ static void virtio_mem_instance_init(Object *obj)
     notifier_list_init(&vmem->size_change_notifiers);
     vmem->precopy_notifier.notify = virtio_mem_precopy_notify;
     QLIST_INIT(&vmem->rdl_list);
+    qemu_mutex_init(&vmem->mutex);
+    qemu_mutex_init(&vmem->req.mutex);
+    qemu_cond_init(&vmem->req.cond);
 
     object_property_add(obj, VIRTIO_MEM_SIZE_PROP, "size", virtio_mem_get_size,
                         NULL, NULL, NULL);
@@ -1092,6 +1227,15 @@ static void virtio_mem_instance_init(Object *obj)
     object_property_add(obj, VIRTIO_MEM_BLOCK_SIZE_PROP, "size",
                         virtio_mem_get_block_size, virtio_mem_set_block_size,
                         NULL, NULL);
+}
+
+static void virtio_mem_instance_finalize(Object *obj)
+{
+    VirtIOMEM *vmem = VIRTIO_MEM(obj);
+
+    qemu_cond_destroy(&vmem->req.cond);
+    qemu_mutex_destroy(&vmem->req.mutex);
+    qemu_mutex_destroy(&vmem->mutex);
 }
 
 static Property virtio_mem_properties[] = {
@@ -1119,13 +1263,18 @@ static bool virtio_mem_rdm_is_populated(const RamDiscardMgr *rdm,
     uint64_t start_gpa = QEMU_ALIGN_DOWN(vmem->addr + offset, vmem->block_size);
     uint64_t end_gpa = QEMU_ALIGN_UP(vmem->addr + offset + size,
                                      vmem->block_size);
+    QemuMutex *mutex = (QemuMutex *)&vmem->mutex;
+    bool ret = false;
 
     g_assert(mr == &vmem->memdev->mr);
-    if (!virtio_mem_valid_range(vmem, start_gpa, end_gpa - start_gpa)) {
-        return false;
-    }
 
-    return virtio_mem_test_bitmap(vmem, start_gpa, end_gpa - start_gpa, true);
+    qemu_mutex_lock(mutex);
+    if (virtio_mem_valid_range(vmem, start_gpa, end_gpa - start_gpa)) {
+        ret = virtio_mem_test_bitmap(vmem, start_gpa, end_gpa - start_gpa,
+                                     true);
+    }
+    qemu_mutex_unlock(mutex);
+    return ret;
 }
 
 static int virtio_mem_notify_populate_range_single_cb(const VirtIOMEM *vmem,
@@ -1157,10 +1306,13 @@ static void virtio_mem_rdm_register_listener(RamDiscardMgr *rdm,
     int ret;
 
     g_assert(mr == &vmem->memdev->mr);
-    QLIST_INSERT_HEAD(&vmem->rdl_list, rdl, next);
 
+    /* Make sure the request thread does not interfere until we're done. */
+    qemu_mutex_lock(&vmem->req.mutex);
+    QLIST_INSERT_HEAD(&vmem->rdl_list, rdl, next);
     ret = virtio_mem_for_each_plugged_range(vmem, rdl,
                                      virtio_mem_notify_populate_range_single_cb);
+    qemu_mutex_unlock(&vmem->req.mutex);
     if (ret) {
         error_report("%s: Replaying plugged ranges failed: %s", __func__,
                      strerror(-ret));
@@ -1174,6 +1326,9 @@ static void virtio_mem_rdm_unregister_listener(RamDiscardMgr *rdm,
     VirtIOMEM *vmem = VIRTIO_MEM(rdm);
 
     g_assert(mr == &vmem->memdev->mr);
+
+    /* Make sure the request thread does not interfere until we're done. */
+    qemu_mutex_lock(&vmem->req.mutex);
     /* Undo what registering a listener did. */
     if (rdl->notify_discard_all) {
         rdl->notify_discard_all(rdl, &vmem->memdev->mr);
@@ -1183,6 +1338,7 @@ static void virtio_mem_rdm_unregister_listener(RamDiscardMgr *rdm,
 
     }
     QLIST_REMOVE(rdl, next);
+    qemu_mutex_unlock(&vmem->req.mutex);
 }
 
 static int virtio_mem_rdm_replay_populated(const RamDiscardMgr *rdm,
@@ -1209,6 +1365,7 @@ static void virtio_mem_class_init(ObjectClass *klass, void *data)
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
     vdc->realize = virtio_mem_device_realize;
     vdc->unrealize = virtio_mem_device_unrealize;
+    vdc->reset = virtio_mem_device_reset;
     vdc->get_config = virtio_mem_get_config;
     vdc->get_features = virtio_mem_get_features;
     vdc->vmsd = &vmstate_virtio_mem_device;
@@ -1230,6 +1387,7 @@ static const TypeInfo virtio_mem_info = {
     .parent = TYPE_VIRTIO_DEVICE,
     .instance_size = sizeof(VirtIOMEM),
     .instance_init = virtio_mem_instance_init,
+    .instance_finalize = virtio_mem_instance_finalize,
     .class_init = virtio_mem_class_init,
     .class_size = sizeof(VirtIOMEMClass),
     .interfaces = (InterfaceInfo[]) {

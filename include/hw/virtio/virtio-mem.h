@@ -62,6 +62,40 @@ struct VirtIOMEM {
     /* block size and alignment */
     uint64_t block_size;
 
+    /*
+     * While this mutex is locked, the state of blocks can't change; the size and
+     * the bitmap can't change, and no plugged memory will get discarded.
+     *
+     * Besides system resets, only the request thread changes the size, the
+     * bitmap and the usable_region_size. During system resets, we temporarily
+     * pause the request thread to avoid locking.
+     *
+     * Only the main thread changes the requested_size. It pauses the request
+     * thread before doing so, to avoid locking.
+     */
+    QemuMutex mutex;
+
+    struct {
+        /* Request thread that processes guests requests in the virtqueue. */
+        QemuThread thread;
+
+        /*
+         * Protects cond, destroying and paused. The request thread grabs this
+         * mutex while active. Also protects the rdl_list from concurrent
+         * notifications while register/unregistering listeners.
+         */
+        QemuMutex mutex;
+
+        /* Condition the request thread waits for. */
+        QemuCond cond;
+
+        /* Make the request thread quit so we can destroy it. */
+        bool destroying;
+
+        /* Make the request thread pause processing requests until unpaused. */
+        bool paused;
+    } req;
+
     /* notifiers to notify when "size" changes */
     NotifierList size_change_notifiers;
 
