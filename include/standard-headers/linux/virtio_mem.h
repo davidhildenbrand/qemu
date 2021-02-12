@@ -87,6 +87,8 @@
 
 /* node_id is an ACPI PXM and is valid */
 #define VIRTIO_MEM_F_ACPI_PXM		0
+/* unplugged memory must not be read */
+#define VIRTIO_MEM_F_UNPLUGGED_UNREADABLE	1
 
 
 /* --- virtio-mem: guest -> host requests --- */

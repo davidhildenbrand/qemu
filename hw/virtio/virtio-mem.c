@@ -453,13 +453,33 @@ static uint64_t virtio_mem_get_features(VirtIODevice *vdev, uint64_t features,
                                         Error **errp)
 {
     MachineState *ms = MACHINE(qdev_get_machine());
+    VirtIOMEM *vmem = VIRTIO_MEM(vdev);
 
     if (ms->numa_state) {
 #if defined(CONFIG_ACPI)
         virtio_add_feature(&features, VIRTIO_MEM_F_ACPI_PXM);
 #endif
     }
+    /*
+     * We only have a shared zeropage for anonymous memory. Tell the guest
+     * that it is not allowed to read unplugged memory - for Linux guests
+     * this implies that they might only be able to (un)plug in bigger
+     * granularity (e.g., Linux memory blocks).
+     */
+    if (memory_region_get_fd(&vmem->memdev->mr) >= 0) {
+        virtio_add_feature(&features, VIRTIO_MEM_F_UNPLUGGED_UNREADABLE);
+    }
     return features;
+}
+
+static int virtio_mem_validate_features(VirtIODevice *vdev)
+{
+    if (virtio_host_has_feature(vdev, VIRTIO_MEM_F_UNPLUGGED_UNREADABLE) &&
+        !virtio_vdev_has_feature(vdev, VIRTIO_MEM_F_UNPLUGGED_UNREADABLE)) {
+        return -EFAULT;
+    }
+
+    return 0;
 }
 
 static void virtio_mem_system_reset(void *opaque)
@@ -958,6 +978,7 @@ static void virtio_mem_class_init(ObjectClass *klass, void *data)
     vdc->unrealize = virtio_mem_device_unrealize;
     vdc->get_config = virtio_mem_get_config;
     vdc->get_features = virtio_mem_get_features;
+    vdc->validate_features = virtio_mem_validate_features;
     vdc->vmsd = &vmstate_virtio_mem_device;
 
     vmc->fill_device_info = virtio_mem_fill_device_info;
