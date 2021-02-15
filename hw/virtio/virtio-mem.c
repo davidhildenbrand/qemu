@@ -516,6 +516,10 @@ static void virtio_mem_device_realize(DeviceState *dev, Error **errp)
     rb = vmem->memdev->mr.ram_block;
     page_size = qemu_ram_pagesize(rb);
 
+    if (memory_region_get_fd(&vmem->memdev->mr) >= 0) {
+        warn_report("File-backed memory isn't fully supported yet");
+    }
+
     /*
      * If the block size wasn't configured by the user, use a sane default. This
      * allows using hugetlbfs backends of any page size without manual
