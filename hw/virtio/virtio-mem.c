@@ -883,6 +883,9 @@ static uint64_t virtio_mem_get_features(VirtIODevice *vdev, uint64_t features,
     if (vmem->unplugged_inaccessible == ON_OFF_AUTO_ON) {
         virtio_add_feature(&features, VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE);
     }
+    if (qemu_wakeup_suspend_enabled()) {
+        virtio_add_feature(&features, VIRTIO_MEM_F_PERSISTENT_SUSPEND);
+    }
     return features;
 }
 
@@ -895,9 +898,18 @@ static int virtio_mem_validate_features(VirtIODevice *vdev)
     return 0;
 }
 
-static void virtio_mem_system_reset(void *opaque)
+static void virtio_mem_system_reset(void *opaque, ShutdownCause reason)
 {
     VirtIOMEM *vmem = VIRTIO_MEM(opaque);
+
+    /*
+     * While waking up from standby/suspend-to-ram, don't unplug any memory.
+     * Note that this also skips a reset after machine creation, when there is
+     * nothing to do for us here either way.
+     */
+    if (reason == SHUTDOWN_CAUSE_NONE) {
+        return;
+    }
 
     /*
      * During usual resets, we will unplug all memory and shrink the usable
@@ -1123,7 +1135,7 @@ static void virtio_mem_device_realize(DeviceState *dev, Error **errp)
         vmstate_register_any(VMSTATE_IF(vmem),
                              &vmstate_virtio_mem_device_early, vmem);
     }
-    qemu_register_reset(virtio_mem_system_reset, vmem);
+    qemu_register_reset_reason(virtio_mem_system_reset, vmem);
 
     /*
      * Set ourselves as RamDiscardManager before the plug handler maps the
@@ -1143,7 +1155,7 @@ static void virtio_mem_device_unrealize(DeviceState *dev)
      * found via an address space anymore. Unset ourselves.
      */
     memory_region_set_ram_discard_manager(&vmem->memdev->mr, NULL);
-    qemu_unregister_reset(virtio_mem_system_reset, vmem);
+    qemu_unregister_reset_reason(virtio_mem_system_reset, vmem);
     if (vmem->early_migration) {
         vmstate_unregister(VMSTATE_IF(vmem), &vmstate_virtio_mem_device_early,
                            vmem);
