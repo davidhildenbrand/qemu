@@ -32,6 +32,7 @@
 typedef struct QEMUResetEntry {
     QTAILQ_ENTRY(QEMUResetEntry) entry;
     QEMUResetHandler *func;
+    QEMUResetReasonHandler *func_reason;
     void *opaque;
     bool skip_on_snapshot_load;
 } QEMUResetEntry;
@@ -71,12 +72,38 @@ void qemu_unregister_reset(QEMUResetHandler *func, void *opaque)
     }
 }
 
+void qemu_register_reset_reason(QEMUResetReasonHandler *func, void *opaque)
+{
+    QEMUResetEntry *re = g_new0(QEMUResetEntry, 1);
+
+    re->func_reason = func;
+    re->opaque = opaque;
+    QTAILQ_INSERT_TAIL(&reset_handlers, re, entry);
+}
+
+void qemu_unregister_reset_reason(QEMUResetReasonHandler *func, void *opaque)
+{
+    QEMUResetEntry *re;
+
+    QTAILQ_FOREACH(re, &reset_handlers, entry) {
+        if (re->func_reason == func && re->opaque == opaque) {
+            QTAILQ_REMOVE(&reset_handlers, re, entry);
+            g_free(re);
+            return;
+        }
+    }
+}
+
 void qemu_devices_reset(ShutdownCause reason)
 {
     QEMUResetEntry *re, *nre;
 
     /* reset all devices */
     QTAILQ_FOREACH_SAFE(re, &reset_handlers, entry, nre) {
+        if (re->func_reason) {
+            re->func_reason(re->opaque, reason);
+            continue;
+        }
         if (reason == SHUTDOWN_CAUSE_SNAPSHOT_LOAD &&
             re->skip_on_snapshot_load) {
             continue;
