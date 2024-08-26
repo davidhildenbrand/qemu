@@ -1534,18 +1534,6 @@ static ram_addr_t find_ram_offset(ram_addr_t size)
     return offset;
 }
 
-static unsigned long last_ram_page(void)
-{
-    RAMBlock *block;
-    ram_addr_t last = 0;
-
-    RCU_READ_LOCK_GUARD();
-    RAMBLOCK_FOREACH(block) {
-        last = MAX(last, block->offset + block->max_length);
-    }
-    return last >> TARGET_PAGE_BITS;
-}
-
 static void qemu_ram_setup_dump(void *addr, ram_addr_t size)
 {
     int ret;
@@ -1799,28 +1787,31 @@ void qemu_ram_msync(RAMBlock *block, ram_addr_t start, ram_addr_t length)
 }
 
 /* Called with ram_list.mutex held */
-static void dirty_memory_extend(ram_addr_t old_ram_size,
-                                ram_addr_t new_ram_size)
+static void dirty_memory_extend(ram_addr_t new_ram_size)
 {
-    ram_addr_t old_num_blocks = DIV_ROUND_UP(old_ram_size,
-                                             DIRTY_MEMORY_BLOCK_SIZE);
-    ram_addr_t new_num_blocks = DIV_ROUND_UP(new_ram_size,
-                                             DIRTY_MEMORY_BLOCK_SIZE);
+    unsigned int new_num_blocks = DIV_ROUND_UP(new_ram_size,
+                                               DIRTY_MEMORY_BLOCK_SIZE);
     int i;
 
-    /* Only need to extend if block count increased */
-    if (new_num_blocks <= old_num_blocks) {
-        return;
-    }
-
     for (i = 0; i < DIRTY_MEMORY_NUM; i++) {
+        unsigned int old_num_blocks = 0;
         DirtyMemoryBlocks *old_blocks;
         DirtyMemoryBlocks *new_blocks;
         int j;
 
         old_blocks = qatomic_rcu_read(&ram_list.dirty_memory[i]);
+        if (old_blocks) {
+            old_num_blocks = old_blocks->num_blocks;
+
+            /* Only need to extend if block count increased */
+            if (new_num_blocks <= old_num_blocks) {
+                return;
+            }
+        }
+
         new_blocks = g_malloc(sizeof(*new_blocks) +
                               sizeof(new_blocks->blocks[0]) * new_num_blocks);
+        new_blocks->num_blocks = new_num_blocks;
 
         if (old_num_blocks) {
             memcpy(new_blocks->blocks, old_blocks->blocks,
@@ -1846,10 +1837,8 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
     RAMBlock *block;
     RAMBlock *last_block = NULL;
     bool free_on_error = false;
-    ram_addr_t old_ram_size, new_ram_size;
+    ram_addr_t ram_size;
     Error *err = NULL;
-
-    old_ram_size = last_ram_page();
 
     qemu_mutex_lock_ramlist();
     new_block->offset = find_ram_offset(new_block->max_length);
@@ -1901,11 +1890,8 @@ static void ram_block_add(RAMBlock *new_block, Error **errp)
         }
     }
 
-    new_ram_size = MAX(old_ram_size,
-              (new_block->offset + new_block->max_length) >> TARGET_PAGE_BITS);
-    if (new_ram_size > old_ram_size) {
-        dirty_memory_extend(old_ram_size, new_ram_size);
-    }
+    ram_size = (new_block->offset + new_block->max_length) >> TARGET_PAGE_BITS;
+    dirty_memory_extend(ram_size);
     /* Keep the list sorted from biggest to smallest block.  Unlike QTAILQ,
      * QLIST (which has an RCU-friendly variant) does not have insertion at
      * tail, so save the last element in last_block.

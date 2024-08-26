@@ -41,6 +41,7 @@ typedef struct RAMBlockNotifier RAMBlockNotifier;
 #define DIRTY_MEMORY_BLOCK_SIZE ((ram_addr_t)256 * 1024 * 8)
 typedef struct {
     struct rcu_head rcu;
+    unsigned int num_blocks;
     unsigned long *blocks[];
 } DirtyMemoryBlocks;
 
