@@ -117,10 +117,11 @@ void HELPER(diag)(CPUS390XState *env, uint32_t r1, uint32_t r3, uint32_t num)
 
     switch (num) {
     case 0x500:
-        /* KVM hypercall */
+        /* QEMU/KVM hypercall */
         bql_lock();
-        r = s390_virtio_hypercall(env);
+        handle_diag_500(env_archcpu(env), GETPC());
         bql_unlock();
+        r = 0;
         break;
     case 0x44:
         /* yield */
