@@ -1493,16 +1493,10 @@ static int handle_e3(S390CPU *cpu, struct kvm_run *run, uint8_t ipbl)
 
 static int handle_hypercall(S390CPU *cpu, struct kvm_run *run)
 {
-    CPUS390XState *env = &cpu->env;
-    int ret;
-
-    ret = s390_virtio_hypercall(env);
-    if (ret == -EINVAL) {
+    if (handle_diag_500(&cpu->env)) {
         kvm_s390_program_interrupt(cpu, PGM_SPECIFICATION);
-        return 0;
     }
-
-    return ret;
+    return 0;
 }
 
 static void kvm_handle_diag_288(S390CPU *cpu, struct kvm_run *run)
