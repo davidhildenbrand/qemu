@@ -24,6 +24,19 @@
 
 OBJECT_DECLARE_TYPE(VirtIOMEM, VirtIOMEMClass,
                     VIRTIO_MEM)
+/*
+ * We only want to get notified about qemu_devices_reset() calls, which
+ * correspond to system resets on supported targets, and we can use the
+ * reset type to filter out corner cases (e.g., wakeup). We don't want to
+ * reset memory block state (unplugging memory) when resetting the device,
+ * unexpectedly ripping out guest RAM.
+ *
+ * We cannot use the virtio-mem device itself, because it can get reset
+ * simply by resetting one of its parents.
+ */
+#define TYPE_VIRTIO_MEM_SYSTEM_RESET "virtio-mem-system-reset"
+
+OBJECT_DECLARE_SIMPLE_TYPE(VirtioMemSystemReset, VIRTIO_MEM_SYSTEM_RESET)
 
 #define VIRTIO_MEM_MEMDEV_PROP "memdev"
 #define VIRTIO_MEM_NODE_PROP "node"
@@ -117,8 +130,14 @@ struct VirtIOMEM {
     /* listeners to notify on plug/unplug activity. */
     QLIST_HEAD(, RamDiscardListener) rdl_list;
 
-    /* State of the resettable container */
+    /* Catch qemu_devices_reset() only. */
+    VirtioMemSystemReset *system_reset;
+};
+
+struct VirtioMemSystemReset {
+    Object parent;
     ResettableState reset_state;
+    VirtIOMEM *vmem;
 };
 
 struct VirtIOMEMClass {
